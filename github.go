@@ -23,8 +23,12 @@ import (
 // browser_download_url: the API URL serves the bytes to a bearer token,
 // which is the only thing that works while the repo is private.
 type Release struct {
-	TagName string  `json:"tag_name"`
-	Assets  []Asset `json:"assets"`
+	TagName string `json:"tag_name"`
+	// Assets is the release's asset list as the API reports it. It is EMPTY
+	// for a release resolved without a token, where no such list is ever
+	// fetched — use AssetURL, which covers both cases, rather than ranging
+	// over this.
+	Assets []Asset `json:"assets"`
 
 	// downloadBase is set only for a release resolved anonymously, where
 	// there is no asset list to look a URL up in. It is the directory URL
@@ -71,6 +75,10 @@ func (r *Release) AssetURL(name string) (string, error) {
 // pinned tag needs no lookup at all, and "latest" is read from the
 // /releases/latest redirect on the download host, which costs no quota. The
 // API remains the fallback for when that redirect yields nothing usable.
+//
+// Anonymously a pinned tag is therefore taken at its word: it is not checked
+// to exist, so a Check of one that does not will report it as available and
+// only the download will fail (with an error that says so).
 func FetchRelease(ctx context.Context, cfg Config, tag string) (*Release, error) {
 	if err := cfg.normalise(); err != nil {
 		return nil, err
@@ -79,6 +87,14 @@ func FetchRelease(ctx context.Context, cfg Config, tag string) (*Release, error)
 }
 
 func fetchRelease(ctx context.Context, cfg *Config, tag string) (*Release, error) {
+	// Validated once, before either branch: both paste the tag into a URL
+	// path — the API's /releases/tags/<tag>, the download host's
+	// /releases/download/<tag>/ — so a "../.." in a -version flag would
+	// escape to a path neither caller intended, and the checksum manifest
+	// would be fetched from that same wrong place rather than catching it.
+	if tag != "" && !tagRe.MatchString(tag) {
+		return nil, fmt.Errorf("resolve release: bad version %q: want a release tag", tag)
+	}
 	if cfg.Token == "" {
 		if rel := anonRelease(ctx, cfg, tag); rel != nil {
 			return rel, nil
@@ -88,17 +104,21 @@ func fetchRelease(ctx context.Context, cfg *Config, tag string) (*Release, error
 }
 
 // anonRelease resolves a release without touching the API, or returns nil
-// when it cannot — a redirect that yields no tag, or a GITHUB_HOST-style
-// double that does not redirect at all. A nil return is not an error: the
-// caller falls back to the API, which reports the real failure.
+// when it cannot — a redirect that yields no tag, or a download host that
+// does not redirect at all. A nil return is not an error: the caller falls
+// back to the API, which reports the real failure.
 func anonRelease(ctx context.Context, cfg *Config, tag string) *Release {
 	if tag == "" {
+		// Used exactly as the redirect gave it. EnsureV belongs only on a
+		// tag a human typed: a project that tags "1.2.3" without the v
+		// would otherwise have its own release renamed into a 404.
 		tag = latestTagFromRedirect(ctx, cfg)
 		if tag == "" {
 			return nil
 		}
+	} else {
+		tag = EnsureV(tag)
 	}
-	tag = EnsureV(tag)
 	return &Release{
 		TagName:      tag,
 		downloadBase: cfg.DownloadBase + "/" + cfg.Repo + "/releases/download/" + tag,
@@ -137,9 +157,12 @@ func latestTagFromRedirect(ctx context.Context, cfg *Config) string {
 	if err != nil {
 		return ""
 	}
-	// Only a .../releases/tag/<tag> destination is a resolved release.
+	// Only a .../releases/tag/<tag> destination on THIS repo is a resolved
+	// release. Checking the prefix rather than merely "something before the
+	// marker" is what stops a redirect that lands on another repo — a
+	// transfer, a rename, anything surprising — from being installed from.
 	before, tag, ok := strings.Cut(loc.Path, "/releases/tag/")
-	if !ok || before == "" || !tagRe.MatchString(tag) {
+	if !ok || before != "/"+cfg.Repo || !tagRe.MatchString(tag) {
 		return ""
 	}
 	return tag

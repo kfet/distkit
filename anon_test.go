@@ -239,6 +239,85 @@ func TestAssetURLFromDownloadBase(t *testing.T) {
 	}
 }
 
+// A tag is pasted into a URL path on both the API and the download host, so
+// one that is not tag-shaped has to be refused rather than escaping to some
+// other repo's release — where the checksum manifest would be fetched from
+// the same wrong place and agree with itself.
+func TestPinnedVersionIsValidated(t *testing.T) {
+	for _, bad := range []string{
+		"../../other/repo/releases/download/v1",
+		"v1/../v2",
+		"v1 v2",
+		"-v1",
+	} {
+		t.Run(bad, func(t *testing.T) {
+			for _, token := range []string{"", "seeded"} {
+				cfg := Config{
+					Repo: "kfet/testtool", Binary: "testtool", Version: "v1.0.0",
+					APIBase: deadAPI(t).URL, DownloadBase: deadAPI(t).URL,
+					Token: token, tokenResolved: true,
+				}
+				_, err := FetchRelease(t.Context(), cfg, bad)
+				if err == nil || !strings.Contains(err.Error(), "bad version") {
+					t.Fatalf("token=%q: want a rejection, got %v", token, err)
+				}
+			}
+		})
+	}
+}
+
+// A project that tags "1.2.3" without the leading v redirects to
+// /releases/tag/1.2.3, and its assets live under that exact path. Rewriting
+// the resolved tag to "v1.2.3" would 404 on every download.
+func TestResolvedTagIsUsedVerbatim(t *testing.T) {
+	asset := assetFor("testtool")
+	assets := map[string][]byte{asset: []byte("no v prefix\n")}
+	assets["checksums.txt"] = checksums(assets)
+	d := newFakeDownloads(t, "kfet/testtool", "1.2.3", assets)
+
+	var out bytes.Buffer
+	cfg := anonConfig(t, d, installedBinary(t, "testtool"), &out)
+	cfg.DisableBrew = true
+
+	res, err := Update(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Update: %v (%s)", err, out.String())
+	}
+	if !res.Updated {
+		t.Fatalf("got %+v (%s)", res, out.String())
+	}
+}
+
+// A redirect that lands on a different repo is not this repo's latest
+// release, whatever it looks like.
+func TestRedirectToAnotherRepoIsRejected(t *testing.T) {
+	d := newFakeDownloads(t, "kfet/testtool", "v1.1.0", nil)
+	d.redirectTo = "/someone/else/releases/tag/v9.9.9"
+	var out bytes.Buffer
+	cfg := anonConfig(t, d, "", &out)
+	if err := cfg.normalise(); err != nil {
+		t.Fatal(err)
+	}
+	if got := latestTagFromRedirect(t.Context(), &cfg); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// A configured base with a trailing slash must not produce "//" in URLs.
+func TestBaseURLsLoseTrailingSlash(t *testing.T) {
+	cfg := Config{
+		Repo: "kfet/testtool", Binary: "testtool", Version: "v1",
+		APIBase: "https://api.example.com/", DownloadBase: "https://example.com/",
+		tokenResolved: true,
+	}
+	if err := cfg.normalise(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIBase != "https://api.example.com" || cfg.DownloadBase != "https://example.com" {
+		t.Fatalf("got %q and %q", cfg.APIBase, cfg.DownloadBase)
+	}
+}
+
 // A tag written without the leading v resolves to the same release.
 func TestAnonReleaseNormalisesTag(t *testing.T) {
 	cfg := Config{Repo: "kfet/testtool", Binary: "testtool", Version: "v1", tokenResolved: true}

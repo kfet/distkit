@@ -105,6 +105,16 @@ OS="${OS:-$(detect_os)}"
 ARCH="${ARCH:-$(detect_arch)}"
 
 # ---- resolve version ------------------------------------------------------
+# VERSION is pasted into a URL path twice — the API's /releases/tags/<tag> and
+# the download host's /releases/download/<tag>/ — so a value carrying a slash
+# or whitespace would fetch from a path nobody meant, and the checksum
+# manifest would come from that same wrong place and agree with itself. A
+# typo'd tag also gets a straight answer here instead of a puzzling 404 later.
+case "$VERSION" in
+	latest) ;;
+	''|-*|*[!A-Za-z0-9._+-]*) die "bad VERSION '$VERSION': want a release tag, e.g. {{.ExampleTag}}" ;;
+esac
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 

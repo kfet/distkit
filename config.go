@@ -271,6 +271,10 @@ func (c *Config) normalise() error {
 	if c.DownloadBase == "" {
 		c.DownloadBase = DefaultDownloadBase
 	}
+	// Both are joined with "/" + a path, so a configured trailing slash
+	// would produce "//" in every URL built from them.
+	c.APIBase = strings.TrimSuffix(c.APIBase, "/")
+	c.DownloadBase = strings.TrimSuffix(c.DownloadBase, "/")
 	if c.HTTPClient == nil {
 		c.HTTPClient = defaultHTTPClient()
 	}

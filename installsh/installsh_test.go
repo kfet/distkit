@@ -385,6 +385,21 @@ func TestGeneratedScriptInstallsEndToEnd(t *testing.T) {
 		return string(out), err
 	}
 
+	t.Run("a VERSION that is not a tag is refused", func(t *testing.T) {
+		// It would otherwise be pasted into two URL paths, and the checksum
+		// manifest fetched from the same wrong place would agree with the
+		// wrong binary.
+		for _, bad := range []string{"../../other/repo/releases/download/v1", "v1 v2", "-v1"} {
+			out, err := run("VERSION=" + bad)
+			if err == nil {
+				t.Fatalf("VERSION=%q was accepted:\n%s", bad, out)
+			}
+			if !strings.Contains(out, "bad VERSION") {
+				t.Errorf("VERSION=%q: output:\n%s", bad, out)
+			}
+		}
+	})
+
 	t.Run("anonymous download path", func(t *testing.T) {
 		out, err := run()
 		if err != nil {
