@@ -503,3 +503,24 @@ func TestGeneratedArchiveScriptInstallsEndToEnd(t *testing.T) {
 		t.Fatalf("installed %q", got)
 	}
 }
+
+// os.WriteFile applies its mode only when it creates the file, so
+// regenerating over an existing non-executable copy must still leave a
+// script the repo can run.
+func TestWriteRestoresTheExecutableBit(t *testing.T) {
+	spec := Spec{Repo: "kfet/x", Binary: "x"}
+	p := filepath.Join(t.TempDir(), "install.sh")
+	if err := os.WriteFile(p, []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(p, spec); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("regenerated install.sh is not executable: %v", fi.Mode())
+	}
+}

@@ -289,12 +289,19 @@ func isArchiveName(name string) bool {
 
 // Write renders spec and writes it to path with mode 0755 — install.sh is
 // executable in every repo that has one.
+//
+// The chmod is not redundant: os.WriteFile applies its mode only when it
+// CREATES the file, so regenerating over an existing non-executable copy
+// would otherwise leave a `./install.sh` that cannot be run.
 func Write(path string, spec Spec) error {
 	out, err := Render(spec)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o755)
+	if err := os.WriteFile(path, out, 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o755)
 }
 
 // CheckDrift reports whether the file at path is byte-identical to what
