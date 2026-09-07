@@ -58,7 +58,11 @@ carry a bearer token when one can be found. This is the only shape that works
 against a repo that is still private, and it works unauthenticated against a
 public one, so there is one code path rather than two. The token is taken from
 `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token` — a fleet host usually
-has `gh` configured but exports no token.
+has `gh` configured but exports no token. It is worth having even against a
+public repo: GitHub's unauthenticated rate limit is per **IP address**, so a
+fleet behind one NAT exhausts it between them, and the resulting 403 reads
+like a permissions failure. A missing-token 404 and a spent-limit 403 are
+reported as the different problems they are.
 
 **The download is verified before anything moves.** The asset's sha256 is
 computed inline as it streams to disk (never read back) and compared with the

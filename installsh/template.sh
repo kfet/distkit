@@ -117,7 +117,7 @@ else
 fi
 # Extract "tag_name": "v…" without jq, which is not installable from here.
 VERSION="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmpdir/release.json" | head -n1)"
-[ -n "$VERSION" ] || die "could not resolve a release tag from $REPO (private repo? set GITHUB_TOKEN)"
+[ -n "$VERSION" ] || die "could not resolve a release tag from $REPO (a private repo, or a spent unauthenticated API rate limit — both are fixed by GITHUB_TOKEN)"
 VERSION_NO_V="${VERSION#v}"
 log "installing $REPO $VERSION ($OS/$ARCH)"
 

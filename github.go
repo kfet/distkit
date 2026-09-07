@@ -72,13 +72,7 @@ func fetchRelease(ctx context.Context, cfg *Config, tag string) (*Release, error
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		// A private repo answers 404 to an unauthenticated caller, so the
-		// advice differs entirely depending on whether we sent a token.
-		hint := "a private repo needs GITHUB_TOKEN, GH_TOKEN or a logged-in `gh`"
-		if cfg.Token != "" {
-			hint = "no such release, or the token cannot read " + cfg.Repo
-		}
-		return nil, fmt.Errorf("resolve release: github api: %s (%s)", resp.Status, hint)
+		return nil, fmt.Errorf("resolve release: github api: %s (%s)", resp.Status, releaseHint(cfg, resp.StatusCode))
 	}
 	var rel Release
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
@@ -88,6 +82,26 @@ func fetchRelease(ctx context.Context, cfg *Config, tag string) (*Release, error
 		return nil, errors.New("resolve release: github api: empty tag_name")
 	}
 	return &rel, nil
+}
+
+// releaseHint explains a non-200 from the releases API in the terms that
+// actually apply, which depend on whether a token was sent.
+//
+// The 403 case is the one that misleads: GitHub's unauthenticated rate limit
+// is per IP ADDRESS, so a fleet behind one NAT exhausts it between them and
+// every host then fails with what reads like a permissions error. A private
+// repo, by contrast, answers 404 to an unauthenticated caller — never 403.
+func releaseHint(cfg *Config, status int) string {
+	if cfg.Token == "" {
+		if status == http.StatusForbidden || status == http.StatusTooManyRequests {
+			return "GitHub's unauthenticated API rate limit is per IP address and looks spent; set GITHUB_TOKEN, GH_TOKEN, or log in with `gh`"
+		}
+		return "a private repo needs GITHUB_TOKEN, GH_TOKEN or a logged-in `gh`"
+	}
+	if status == http.StatusForbidden || status == http.StatusTooManyRequests {
+		return "rate-limited, or the token may not read " + cfg.Repo
+	}
+	return "no such release, or the token cannot read " + cfg.Repo
 }
 
 // fetch GETs src as raw bytes, writes them to dst with the given file mode,

@@ -99,3 +99,31 @@ func TestFetchReleaseValidatesConfig(t *testing.T) {
 		t.Fatal("want a validation error")
 	}
 }
+
+// A 403 is what a fleet behind one NAT gets when the shared, per-IP
+// unauthenticated rate limit is spent — it looks exactly like a permissions
+// failure, which sends an operator hunting for a token problem on a public
+// repo. Say which it is.
+func TestReleaseHintSeparatesRateLimitFromPermissions(t *testing.T) {
+	anon := &Config{Repo: "kfet/tool"}
+	tok := &Config{Repo: "kfet/tool", Token: "x"}
+	cases := []struct {
+		name   string
+		cfg    *Config
+		status int
+		want   string
+	}{
+		{"anon 404 is a private repo", anon, 404, "private repo"},
+		{"anon 403 is the rate limit", anon, 403, "rate limit is per IP address"},
+		{"anon 429 is the rate limit", anon, 429, "rate limit is per IP address"},
+		{"token 404 is a missing release", tok, 404, "no such release"},
+		{"token 403 may be either", tok, 403, "rate-limited"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := releaseHint(c.cfg, c.status); !strings.Contains(got, c.want) {
+				t.Fatalf("hint for %d = %q, want it to mention %q", c.status, got, c.want)
+			}
+		})
+	}
+}
