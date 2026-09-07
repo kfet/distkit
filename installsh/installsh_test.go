@@ -531,3 +531,70 @@ func TestWriteRestoresTheExecutableBit(t *testing.T) {
 		t.Fatalf("regenerated install.sh is not executable: %v", fi.Mode())
 	}
 }
+
+// TestAnonymousResolveSurvivesASpentAPIRateLimit pins the reason the
+// redirect path exists: GitHub's unauthenticated REST limit is 60/hour per
+// IP address, and a NAT'd fleet or a CI runner routinely arrives with it
+// already spent. An anonymous `curl … | sh` for a public repo must still
+// work — it resolves "latest" from the releases/latest redirect on the
+// download host and never touches the API.
+func TestAnonymousResolveSurvivesASpentAPIRateLimit(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not available")
+	}
+	payload := []byte("#!/bin/sh\necho anon-ok\n")
+	asset := "testtool-linux-amd64"
+	files := map[string][]byte{asset: payload}
+	h := sha256.Sum256(payload)
+	files["checksums.txt"] = []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(h[:]), asset))
+
+	var apiHits int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/"):
+			apiHits++
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			http.Redirect(w, r, "/kfet/testtool/releases/tag/v1.2.3", http.StatusFound)
+		case strings.Contains(r.URL.Path, "/releases/tag/"):
+			_, _ = w.Write([]byte("<html>release page</html>"))
+		case strings.Contains(r.URL.Path, "/releases/download/"):
+			if !strings.Contains(r.URL.Path, "/v1.2.3/") {
+				http.Error(w, "wrong tag: "+r.URL.Path, http.StatusNotFound)
+				return
+			}
+			name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			if data, ok := files[name]; ok {
+				_, _ = w.Write(data)
+				return
+			}
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "install.sh")
+	if err := os.WriteFile(path, []byte(mustRender(t, Spec{Repo: "kfet/testtool", Binary: "testtool"})), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(dir, "bin")
+	cmd := exec.Command("sh", path)
+	cmd.Env = append(os.Environ(),
+		"GITHUB_API="+srv.URL, "GITHUB_HOST="+srv.URL,
+		"BIN_DIR="+binDir, "OS=linux", "ARCH=amd64", "GITHUB_TOKEN=", "PREFIX=", "VERSION=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install failed with the API rate-limited: %v\n%s", err, out)
+	}
+	if got, _ := os.ReadFile(filepath.Join(binDir, "testtool")); string(got) != string(payload) {
+		t.Fatalf("installed %q", got)
+	}
+	if apiHits != 0 {
+		t.Errorf("anonymous install spent %d API request(s); it must not touch the API", apiHits)
+	}
+}
