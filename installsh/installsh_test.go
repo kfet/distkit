@@ -388,14 +388,30 @@ func TestGeneratedScriptInstallsEndToEnd(t *testing.T) {
 	t.Run("a VERSION that is not a tag is refused", func(t *testing.T) {
 		// It would otherwise be pasted into two URL paths, and the checksum
 		// manifest fetched from the same wrong place would agree with the
-		// wrong binary.
-		for _, bad := range []string{"../../other/repo/releases/download/v1", "v1 v2", "-v1"} {
+		// wrong binary. ".." carries no slash, so a slash-only check lets it
+		// through, but every URL normaliser still reads it as "up one".
+		for _, bad := range []string{
+			"../../other/repo/releases/download/v1", "v1 v2", "-v1",
+			"..", ".", "./v1", ".v1", "_v1", "+v1",
+		} {
 			out, err := run("VERSION=" + bad)
 			if err == nil {
 				t.Fatalf("VERSION=%q was accepted:\n%s", bad, out)
 			}
 			if !strings.Contains(out, "bad VERSION") {
 				t.Errorf("VERSION=%q: output:\n%s", bad, out)
+			}
+		}
+	})
+
+	t.Run("an ordinary release tag is accepted", func(t *testing.T) {
+		// The reject arm must not over-reach: a tag may legitimately start
+		// with a digit ("0.6.0"), and may carry a prerelease or build
+		// suffix. If any of these were refused, every install would break.
+		for _, good := range []string{"v1.2.3", "0.6.0", "v1.2.3-rc1", "v1.2.3+build5", "V1"} {
+			out, _ := run("VERSION=" + good)
+			if strings.Contains(out, "bad VERSION") {
+				t.Errorf("VERSION=%q is a valid tag and must be accepted:\n%s", good, out)
 			}
 		}
 	})
