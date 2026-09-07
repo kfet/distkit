@@ -233,11 +233,15 @@ The template is the union of the six hand-written scripts it replaces:
   (optionally 386), and all three 32-bit ARM spellings — `armv6l`, `armv7l`,
   `armv8l` — which collapse to the single GOARM=6 asset that every one of them
   can execute.
-- Version resolution through the GitHub API, honouring `GITHUB_TOKEN`, so the
-  same script works against a private repo. Without a token it uses the plain
-  `releases/download` URL (one redirect, no JSON parsing); with one it picks
-  the asset's API URL out of the release JSON, because the download host 404s
-  a private repo whatever you send it.
+- Version resolution honouring `GITHUB_TOKEN`, so the same script works
+  against a private repo. **Anonymously the API is not touched at all**:
+  `latest` comes from the `releases/latest` redirect and the asset from the
+  plain `releases/download` URL (one redirect each, no JSON parsing), because
+  GitHub's unauthenticated REST limit is 60/hour *per IP* and a NAT'd fleet
+  or a CI runner routinely arrives with it spent. With a token it resolves
+  the release through the API and picks the asset's API URL out of the
+  release JSON, because the download host 404s a private repo whatever you
+  send it. The API is still the fallback when the redirect yields no tag.
 - sha256 verification against `checksums.txt` (`sha256sum` or `shasum -a 256`).
 - Optional tarball unpacking, finding the binary at any depth.
 - `BIN_DIR`, with `PREFIX` accepted as the legacy alias (`$PREFIX/bin`) —
