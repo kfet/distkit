@@ -21,6 +21,10 @@ func TestUpdateRefusesDevBuild(t *testing.T) {
 	for _, v := range []string{
 		"dev", "DEV", "vdev", "(devel)", "unknown", "snapshot",
 		"v0.1.0-dev", "0.69.1-DEV", "v1.2.3+dev", "v1.2.3-dirty", "v1.2.3-snapshot",
+		// Semver build metadata must not disarm the guard: a Makefile that
+		// appends a commit sha describes the same working-tree build as one
+		// that stamps a bare "-dev", and the guard must fire for both.
+		"v0.6.1-dev+abc1234", "0.6.1-dev+abc1234.dirty", "v1.2.3-snapshot+20240101",
 	} {
 		cfg := Config{
 			Repo:     "kfet/testtool",
@@ -35,11 +39,57 @@ func TestUpdateRefusesDevBuild(t *testing.T) {
 			t.Errorf("version %q: got %v", v, err)
 		}
 	}
-	// A prerelease is a real tag with real assets; it must still update.
-	for _, v := range []string{"v1.2.3", "0.1.0", "v1.2.3-rc1", "v2.0.0-beta.2", "v1.0.0-development"} {
+	// A prerelease is a real tag with real assets; it must still update,
+	// with or without build metadata attached.
+	for _, v := range []string{
+		"v1.2.3", "0.1.0", "v1.2.3-rc1", "v2.0.0-beta.2", "v1.0.0-development",
+		"v1.2.3-rc1+build5", "v1.2.3+20240101",
+	} {
 		if IsDevBuild(v) {
 			t.Errorf("%q is a real tag and must not be mistaken for a dev build", v)
 		}
+	}
+}
+
+// TestUpdateAllowsPinnedVersionOnDevBuild covers the escape hatch. Refusing a
+// dev build protects a developer's working tree from `update` chasing latest.
+// But a hand-deployed build (cross-compiled and scp'd to a server) carries the
+// same version string and cannot be told apart, so there has to be a
+// supported way back onto a real release. A pinned -version is it: it names
+// one release rather than chasing latest, so it is a statement of intent.
+func TestUpdateAllowsPinnedVersionOnDevBuild(t *testing.T) {
+	for _, v := range []string{"dev", "v0.1.0-dev", "0.6.1-dev+abc1234.dirty"} {
+		cfg := Config{
+			Repo:          "kfet/testtool",
+			Binary:        "testtool",
+			Version:       v,
+			TargetVersion: "v1.2.3",
+			Token:         "seeded",
+			Stdout:        &bytes.Buffer{},
+			ExecPath:      func() (string, error) { return "/nonexistent/testtool", nil },
+		}
+		_, err := Update(t.Context(), cfg)
+		if err != nil && strings.Contains(err.Error(), "not a release build") {
+			t.Errorf("version %q: a pinned -version must get past the dev-build guard: %v", v, err)
+		}
+	}
+}
+
+// TestDevBuildRefusalNamesTheEscapeHatch keeps the refusal actionable: an
+// operator on a hand-deployed binary must learn the way out from the error
+// itself, not from the source.
+func TestDevBuildRefusalNamesTheEscapeHatch(t *testing.T) {
+	cfg := Config{
+		Repo:     "kfet/testtool",
+		Binary:   "testtool",
+		Version:  "0.6.1-dev+abc1234",
+		Token:    "seeded",
+		Stdout:   &bytes.Buffer{},
+		ExecPath: func() (string, error) { return "/nonexistent/testtool", nil },
+	}
+	_, err := Update(t.Context(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "testtool update -version vX.Y.Z") {
+		t.Fatalf("refusal must name the pinned-version escape hatch: %v", err)
 	}
 }
 

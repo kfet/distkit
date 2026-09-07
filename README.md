@@ -154,9 +154,19 @@ A **dev build is refused**. `Version: "dev"` (or `unknown`, `(devel)`,
 `snapshot`, …), and anything carrying a `-dev`, `+dev`, `-snapshot` or
 `-dirty` suffix — `v0.4.1-dev` is what a working tree usually compiles as —
 can never equal a tag, so every run would report an update available and then
-rename a release binary over the developer's own build. A prerelease tag
-(`-rc1`, `-beta.2`) is a real release and still updates.
+rename a release binary over the developer's own build. Semver build metadata
+is stripped first, so `v0.4.1-dev+abc1234.dirty` is refused exactly like a
+bare `v0.4.1-dev`: whether your Makefile appends a commit sha says nothing
+about whether the build is a release. A prerelease tag (`-rc1`, `-beta.2`) is
+a real release and still updates, with or without metadata.
 `distkit.IsDevBuild` is exported if you want to hide the subcommand instead.
+
+A pinned **`TargetVersion` is the escape hatch** and gets past that guard. A
+binary cross-compiled and scp'd to a server carries the same `-dev` version
+string as a developer's `./bin/tool` and cannot be told apart from it, so
+there has to be a supported way back onto a real release — `tool update
+-version vX.Y.Z` names one release instead of chasing latest, which makes it
+a statement of intent rather than an accident. The refusal message says so.
 
 Version comparison is exact tag equality, not "is newer". With
 `TargetVersion` pinned the target may be *older* than what is installed, and a

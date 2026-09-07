@@ -145,9 +145,16 @@ func Update(ctx context.Context, cfg Config) (Result, error) {
 
 	// A dev build has no tag to compare against, so every run would report
 	// an update and then rename a release binary over the developer's own.
-	if IsDevBuild(cfg.Version) {
-		return res, fmt.Errorf("%s %s is not a release build; nothing to update",
-			cfg.Binary, cfg.Version)
+	//
+	// A pinned TargetVersion is the escape hatch: it names one specific
+	// release rather than chasing "latest", so it is a statement of intent
+	// ("put this release here") rather than an accident. That is the
+	// supported way to roll a hand-built or hand-deployed binary back onto
+	// a real release.
+	if IsDevBuild(cfg.Version) && cfg.TargetVersion == "" {
+		return res, fmt.Errorf("%s %s is not a release build; nothing to update"+
+			" (to install a specific release anyway: %s update -version vX.Y.Z)",
+			cfg.Binary, cfg.Version, cfg.Binary)
 	}
 
 	resolved, err := resolveExe(&cfg)

@@ -369,6 +369,14 @@ var devSuffixes = []string{"-dev", "+dev", "-devel", "-snapshot", "-dirty"}
 // Self-updating one would rename a release binary over a developer's own
 // build — it can never equal a tag, so every check reports "available" —
 // which is a surprising thing to do to someone's working tree.
+//
+// Semver build metadata (everything from the first "+") is stripped before
+// the suffix test, because it says nothing about whether this is a release:
+// a Makefile that stamps "0.6.1-dev+abc1234.dirty" is describing the same
+// working-tree build as one that stamps a bare "0.6.1-dev", and the guard
+// must not fire for one and not the other merely because the first appends a
+// commit sha. Note that stripping also disarms the "+dev" suffix, so that
+// case is checked before.
 func IsDevBuild(v string) bool {
 	v = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v), "v"))
 	if devVersions[v] {
@@ -377,6 +385,13 @@ func IsDevBuild(v string) bool {
 	for _, s := range devSuffixes {
 		if strings.HasSuffix(v, s) {
 			return true
+		}
+	}
+	if base, _, ok := strings.Cut(v, "+"); ok {
+		for _, s := range devSuffixes {
+			if strings.HasSuffix(base, s) {
+				return true
+			}
 		}
 	}
 	return false
