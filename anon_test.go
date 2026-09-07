@@ -330,3 +330,64 @@ func TestAnonReleaseNormalisesTag(t *testing.T) {
 		t.Fatalf("got %+v", rel)
 	}
 }
+
+// Config.Anonymous is the embedder's knob: a background version check inside
+// another program must neither exec `gh` nor let an ambient GITHUB_TOKEN
+// change which path it resolves through, or the two hosts it runs on stop
+// being comparable.
+func TestAnonymousIgnoresAmbientTokenAndSkipsDiscovery(t *testing.T) {
+	d := newFakeDownloads(t, "kfet/testtool", "v2.0.0", nil)
+
+	// Both sources of a token are live: an exported env var, and a `gh`
+	// that would happily print one. Neither may be consulted.
+	t.Setenv("GITHUB_TOKEN", "ghp_ambient")
+	discovered := false
+	orig := tokenCommand
+	tokenCommand = func() ([]byte, error) {
+		discovered = true
+		return []byte("ghp_from_gh"), nil
+	}
+	t.Cleanup(func() { tokenCommand = orig })
+
+	var out bytes.Buffer
+	cfg := Config{
+		Repo:         "kfet/testtool",
+		Binary:       "testtool",
+		Version:      "v1.0.0",
+		Anonymous:    true,
+		APIBase:      deadAPI(t).URL,
+		DownloadBase: d.URL,
+		Stdout:       &out,
+		Stderr:       &out,
+		HTTPClient:   d.Client(),
+	}
+
+	st, err := Check(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Check: %v (%s)", err, out.String())
+	}
+	if st.Target != "v2.0.0" || !st.Available {
+		t.Fatalf("got %+v", st)
+	}
+	if discovered {
+		t.Error("Anonymous must not exec `gh auth token`")
+	}
+}
+
+// The invariant every call site leans on: after normalise, Anonymous implies
+// an empty Token, so no request can carry an Authorization header.
+func TestAnonymousClearsExplicitToken(t *testing.T) {
+	cfg := Config{
+		Repo:      "kfet/testtool",
+		Binary:    "testtool",
+		Version:   "v1.0.0",
+		Token:     "ghp_explicit",
+		Anonymous: true,
+	}
+	if err := cfg.normalise(); err != nil {
+		t.Fatalf("normalise: %v", err)
+	}
+	if cfg.Token != "" {
+		t.Fatalf("Anonymous left Token = %q", cfg.Token)
+	}
+}

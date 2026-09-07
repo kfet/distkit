@@ -129,6 +129,7 @@ rather than performing an unverified overwrite. The module still compiles for
 | `ArmSuffix` | | `armv6` | the asset token for 32-bit ARM, where GOARCH is just `arm` |
 | `DisableBrew` | | `false` | turn off Homebrew handling |
 | `Token` | | discovered | `GITHUB_TOKEN` → `GH_TOKEN` → `gh auth token` |
+| `Anonymous` | | `false` | never authenticate: no discovery, no `gh` exec, no token header — for an embedded background check (public repos only) |
 | `APIBase` | | `https://api.github.com` | GitHub Enterprise, or a test double |
 | `HTTPClient` | | see below | |
 | `StallTimeout` | | 2 min | abandon a download that makes *no* progress for this long |

@@ -148,6 +148,19 @@ type Config struct {
 	// environment (GITHUB_TOKEN, GH_TOKEN) and then from a logged-in `gh`.
 	Token string
 
+	// Anonymous forbids authentication entirely: no discovery, no `gh`
+	// exec, and no Authorization header even if Token or GITHUB_TOKEN is
+	// set. Resolution then always takes the /releases/latest redirect on
+	// the download host, and only falls back to the API unauthenticated.
+	//
+	// It exists for an EMBEDDED caller — a background version check inside
+	// another program — where the two costs of discovery are unacceptable:
+	// exec'ing `gh auth token` on a startup path (up to 10s, outside the
+	// caller's context), and a resolution path that silently differs
+	// between a host with `gh` logged in and one without. A private repo
+	// cannot be resolved this way; that is the trade.
+	Anonymous bool
+
 	// tokenResolved records that discovery has already run, so the nested
 	// entry points (Update → Check → Download) do not re-exec `gh auth
 	// token` once per call on a host that has no token to find.
@@ -290,7 +303,13 @@ func (c *Config) normalise() error {
 	if c.ExecPath == nil {
 		c.ExecPath = os.Executable
 	}
-	if c.Token == "" && !c.tokenResolved {
+	if c.Anonymous {
+		// Cleared, not merely left undiscovered: the invariant every call
+		// site relies on is "Anonymous ⇒ Token is empty", so a stale
+		// GITHUB_TOKEN in the environment of an embedding process cannot
+		// flip the resolution path back to the authenticated one.
+		c.Token = ""
+	} else if c.Token == "" && !c.tokenResolved {
 		c.Token = DiscoverToken()
 	}
 	// Set unconditionally: a host with no token must not re-run discovery
