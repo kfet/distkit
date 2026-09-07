@@ -333,17 +333,34 @@ func (c *Config) assetArch(goarch string) string {
 	return goarch
 }
 
-// devVersions are the placeholder versions a non-release build carries. Self-
-// updating one would rename a release binary over a developer's own build (it
-// can never equal a tag, so every check reports "available"), which is a
-// surprising thing to do to someone's working tree.
+// devVersions are the placeholder versions a non-release build carries.
 var devVersions = map[string]bool{
 	"dev": true, "devel": true, "(devel)": true, "unknown": true, "none": true, "snapshot": true,
 }
 
-// IsDevBuild reports whether v is a placeholder rather than a released tag.
+// devSuffixes mark a version DERIVED from a release tag that is nonetheless
+// not one: "0.1.0-dev" compiled into a working tree, or git-describe's
+// "-dirty". A release prerelease ("-rc1", "-beta.2") is a real tag with real
+// assets and is deliberately not listed.
+var devSuffixes = []string{"-dev", "+dev", "-devel", "-snapshot", "-dirty"}
+
+// IsDevBuild reports whether v is a placeholder or a working-tree build
+// rather than a released tag.
+//
+// Self-updating one would rename a release binary over a developer's own
+// build — it can never equal a tag, so every check reports "available" —
+// which is a surprising thing to do to someone's working tree.
 func IsDevBuild(v string) bool {
-	return devVersions[strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v), "v"))]
+	v = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(v), "v"))
+	if devVersions[v] {
+		return true
+	}
+	for _, s := range devSuffixes {
+		if strings.HasSuffix(v, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureV prepends "v" to a version string that lacks it, so that a tag

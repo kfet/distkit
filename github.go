@@ -265,7 +265,8 @@ func fetch(ctx context.Context, cfg *Config, src, dst string, mode os.FileMode) 
 // and a bare "404 Not Found" would leave the operator guessing.
 func assetHint(cfg *Config, status int) string {
 	if cfg.Token == "" && status == http.StatusNotFound {
-		return " (no such release or asset in " + cfg.Repo + "; check the version tag)"
+		return " (no such release or asset in " + cfg.Repo +
+			", or the repo is private and needs GITHUB_TOKEN; check the version tag)"
 	}
 	return ""
 }

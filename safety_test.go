@@ -15,7 +15,13 @@ import (
 func TestUpdateRefusesDevBuild(t *testing.T) {
 	// A dev build can never equal a tag, so every run would report an update
 	// and then rename a release binary over the developer's own build.
-	for _, v := range []string{"dev", "DEV", "vdev", "(devel)", "unknown", "snapshot"} {
+	// The -dev suffix is the common case in practice: every consumer of this
+	// package compiles a working tree as "<last tag>-dev", which is not a
+	// placeholder and used to sail straight past this guard.
+	for _, v := range []string{
+		"dev", "DEV", "vdev", "(devel)", "unknown", "snapshot",
+		"v0.1.0-dev", "0.69.1-DEV", "v1.2.3+dev", "v1.2.3-dirty", "v1.2.3-snapshot",
+	} {
 		cfg := Config{
 			Repo:     "kfet/testtool",
 			Binary:   "testtool",
@@ -29,8 +35,11 @@ func TestUpdateRefusesDevBuild(t *testing.T) {
 			t.Errorf("version %q: got %v", v, err)
 		}
 	}
-	if IsDevBuild("v1.2.3") || IsDevBuild("0.1.0") {
-		t.Error("a real tag must not be mistaken for a dev build")
+	// A prerelease is a real tag with real assets; it must still update.
+	for _, v := range []string{"v1.2.3", "0.1.0", "v1.2.3-rc1", "v2.0.0-beta.2", "v1.0.0-development"} {
+		if IsDevBuild(v) {
+			t.Errorf("%q is a real tag and must not be mistaken for a dev build", v)
+		}
 	}
 }
 

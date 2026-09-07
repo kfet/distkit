@@ -150,8 +150,11 @@ a server that accepts the connection and never answers, and `StallTimeout` for
 a transfer that dies mid-body. Slow is fine; no progress at all is not.
 
 A **dev build is refused**. `Version: "dev"` (or `unknown`, `(devel)`,
-`snapshot`, …) can never equal a tag, so every run would report an update
-available and then rename a release binary over the developer's own build.
+`snapshot`, …), and anything carrying a `-dev`, `+dev`, `-snapshot` or
+`-dirty` suffix — `v0.4.1-dev` is what a working tree usually compiles as —
+can never equal a tag, so every run would report an update available and then
+rename a release binary over the developer's own build. A prerelease tag
+(`-rc1`, `-beta.2`) is a real release and still updates.
 `distkit.IsDevBuild` is exported if you want to hide the subcommand instead.
 
 Version comparison is exact tag equality, not "is newer". With
