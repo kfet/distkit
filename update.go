@@ -8,8 +8,9 @@ import (
 )
 
 // Check resolves the release that `update` would install and compares it with
-// the running version. It performs one GitHub API call and touches nothing on
-// disk, so it is safe to call from a status command or a background nag.
+// the running version. It touches nothing on disk, so it is safe to call from
+// a status command or a background nag. Without a token it also spends no
+// GitHub API quota — see FetchRelease.
 //
 // The comparison is exact-match on the tag, not "is newer": with
 // Config.TargetVersion pinned the target may legitimately be older than what

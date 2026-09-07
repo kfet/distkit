@@ -51,18 +51,23 @@ parsing stdout.
 
 ## What it does, and why
 
-**Everything goes through the GitHub REST API — asset bytes included.** The
-release is resolved with `Accept: application/vnd.github+json`, the asset is
-fetched from its API URL with `Accept: application/octet-stream`, and both
-carry a bearer token when one can be found. This is the only shape that works
-against a repo that is still private, and it works unauthenticated against a
-public one, so there is one code path rather than two. The token is taken from
-`GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token` — a fleet host usually
-has `gh` configured but exports no token. It is worth having even against a
-public repo: GitHub's unauthenticated rate limit is per **IP address**, so a
-fleet behind one NAT exhausts it between them, and the resulting 403 reads
-like a permissions failure. A missing-token 404 and a spent-limit 403 are
-reported as the different problems they are.
+**With a token everything goes through the GitHub REST API — asset bytes
+included; without one, nothing does.** Given a token the release is resolved
+with `Accept: application/vnd.github+json` and the asset fetched from its API
+URL with `Accept: application/octet-stream`, both carrying the bearer. That is
+the only shape that works against a repo that is still private. The token is
+taken from `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token` — a fleet
+host usually has `gh` configured but exports no token.
+
+Anonymously the API is skipped entirely, because its limit is 60 requests an
+hour per **IP address**: a fleet behind one NAT spends it between its own
+hosts, a CI runner inherits a shared one, and an update or a
+`curl … | sh` must not fail for that. A pinned version then needs no lookup at
+all, and `latest` is read from the `releases/latest` redirect on the download
+host, which costs no quota; assets come from the download host too. The API
+stays as the fallback for when that redirect yields no tag, and a
+missing-token 404 and a spent-limit 403 are still reported as the different
+problems they are.
 
 **The download is verified before anything moves.** The asset's sha256 is
 computed inline as it streams to disk (never read back) and compared with the

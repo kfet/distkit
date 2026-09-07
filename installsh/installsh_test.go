@@ -5,12 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kfet/distkit"
@@ -286,7 +290,35 @@ func TestGeneratedScriptInstallsEndToEnd(t *testing.T) {
 	manifest := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(h[:]), asset))
 	files := map[string][]byte{asset: payload, "checksums.txt": manifest}
 
+	// files is mutated by a subtest (the checksum-mismatch case) while the
+	// server goroutine is still serving, so every access goes through the
+	// lock. A map read racing a map write is not merely unsynchronised — it
+	// can abort the process outright.
+	var filesMu sync.RWMutex
+	fileBytes := func(name string) ([]byte, bool) {
+		filesMu.RLock()
+		defer filesMu.RUnlock()
+		data, ok := files[name]
+		return data, ok
+	}
+	setFile := func(name string, data []byte) {
+		filesMu.Lock()
+		defer filesMu.Unlock()
+		files[name] = data
+	}
+
+	// Asset ids are assigned once, up front, rather than in the handler:
+	// concurrent requests would otherwise write this map while another read
+	// it, and the ids would differ between two /releases/latest calls.
+	names := slices.Sorted(maps.Keys(files))
 	assetIDs := map[string]string{}
+	idFor := map[string]string{}
+	for i, name := range names {
+		id := fmt.Sprint(101 + i)
+		assetIDs[id] = name
+		idFor[name] = id
+	}
+
 	var srv *httptest.Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -302,26 +334,23 @@ func TestGeneratedScriptInstallsEndToEnd(t *testing.T) {
 			// Real GitHub asset URLs end in a numeric id, and the
 			// script's sed pattern relies on that.
 			var assets []map[string]string
-			id := 100
-			for name := range files {
-				id++
-				assetIDs[fmt.Sprint(id)] = name
+			for _, name := range names {
 				assets = append(assets, map[string]string{
 					"name": name,
-					"url":  srv.URL + "/repos/kfet/testtool/releases/assets/" + fmt.Sprint(id),
+					"url":  srv.URL + "/repos/kfet/testtool/releases/assets/" + idFor[name],
 				})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1.2.3", "assets": assets})
 		case strings.Contains(r.URL.Path, "/releases/assets/"):
 			name := assetIDs[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]]
-			if data, ok := files[name]; ok {
+			if data, ok := fileBytes(name); ok {
 				_, _ = w.Write(data)
 				return
 			}
 			http.NotFound(w, r)
 		case strings.Contains(r.URL.Path, "/releases/download/"):
 			name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-			if data, ok := files[name]; ok {
+			if data, ok := fileBytes(name); ok {
 				_, _ = w.Write(data)
 				return
 			}
@@ -405,8 +434,8 @@ func TestGeneratedScriptInstallsEndToEnd(t *testing.T) {
 	})
 
 	t.Run("checksum mismatch aborts", func(t *testing.T) {
-		files["checksums.txt"] = []byte(strings.Repeat("0", 64) + "  " + asset + "\n")
-		defer func() { files["checksums.txt"] = manifest }()
+		setFile("checksums.txt", []byte(strings.Repeat("0", 64)+"  "+asset+"\n"))
+		defer setFile("checksums.txt", manifest)
 		out, err := run("BIN_DIR=" + filepath.Join(dir, "bad"))
 		if err == nil {
 			t.Fatalf("a bad checksum must fail the install:\n%s", out)
@@ -548,12 +577,14 @@ func TestAnonymousResolveSurvivesASpentAPIRateLimit(t *testing.T) {
 	h := sha256.Sum256(payload)
 	files["checksums.txt"] = []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(h[:]), asset))
 
-	var apiHits int
+	// Counted from the server goroutine and read by the test goroutine, so
+	// it has to be atomic rather than merely eventually-correct.
+	var apiHits atomic.Int64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/repos/"):
-			apiHits++
+			apiHits.Add(1)
 			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
 			http.Redirect(w, r, "/kfet/testtool/releases/tag/v1.2.3", http.StatusFound)
@@ -594,8 +625,8 @@ func TestAnonymousResolveSurvivesASpentAPIRateLimit(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(binDir, "testtool")); string(got) != string(payload) {
 		t.Fatalf("installed %q", got)
 	}
-	if apiHits != 0 {
-		t.Errorf("anonymous install spent %d API request(s); it must not touch the API", apiHits)
+	if n := apiHits.Load(); n != 0 {
+		t.Errorf("anonymous install spent %d API request(s); it must not touch the API", n)
 	}
 }
 

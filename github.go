@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,12 @@ import (
 type Release struct {
 	TagName string  `json:"tag_name"`
 	Assets  []Asset `json:"assets"`
+
+	// downloadBase is set only for a release resolved anonymously, where
+	// there is no asset list to look a URL up in. It is the directory URL
+	// assets hang off — ".../releases/download/<tag>" — so AssetURL can
+	// name a file without ever having been told it exists.
+	downloadBase string
 }
 
 // Asset is one file attached to a release.
@@ -36,18 +43,34 @@ type Asset struct {
 	URL string `json:"url"`
 }
 
-// AssetURL returns the API URL of the named asset.
+// AssetURL returns the URL of the named asset: its API URL for a release
+// resolved through the API, or its download URL for one resolved
+// anonymously, where no asset list was ever fetched. In the anonymous case
+// the name is not validated here — a file that is not in the release surfaces
+// as a 404 from the download itself.
 func (r *Release) AssetURL(name string) (string, error) {
 	for _, a := range r.Assets {
 		if a.Name == name {
 			return a.URL, nil
 		}
 	}
+	if r.downloadBase != "" {
+		return r.downloadBase + "/" + name, nil
+	}
 	return "", fmt.Errorf("release %s has no asset %q", r.TagName, name)
 }
 
-// FetchRelease resolves a release through the GitHub API: the latest one
-// when tag is empty, otherwise that exact tag.
+// FetchRelease resolves a release: the latest one when tag is empty,
+// otherwise that exact tag.
+//
+// With a token this goes through the GitHub REST API, which is the only
+// thing that works against a private repo. WITHOUT one it deliberately does
+// not: the unauthenticated API limit is 60 requests/hour PER IP ADDRESS, so a
+// fleet behind one NAT, a CI runner, or a shared office link can arrive with
+// it already spent, and `update` must not fail for that. Anonymously a
+// pinned tag needs no lookup at all, and "latest" is read from the
+// /releases/latest redirect on the download host, which costs no quota. The
+// API remains the fallback for when that redirect yields nothing usable.
 func FetchRelease(ctx context.Context, cfg Config, tag string) (*Release, error) {
 	if err := cfg.normalise(); err != nil {
 		return nil, err
@@ -56,6 +79,73 @@ func FetchRelease(ctx context.Context, cfg Config, tag string) (*Release, error)
 }
 
 func fetchRelease(ctx context.Context, cfg *Config, tag string) (*Release, error) {
+	if cfg.Token == "" {
+		if rel := anonRelease(ctx, cfg, tag); rel != nil {
+			return rel, nil
+		}
+	}
+	return apiRelease(ctx, cfg, tag)
+}
+
+// anonRelease resolves a release without touching the API, or returns nil
+// when it cannot — a redirect that yields no tag, or a GITHUB_HOST-style
+// double that does not redirect at all. A nil return is not an error: the
+// caller falls back to the API, which reports the real failure.
+func anonRelease(ctx context.Context, cfg *Config, tag string) *Release {
+	if tag == "" {
+		tag = latestTagFromRedirect(ctx, cfg)
+		if tag == "" {
+			return nil
+		}
+	}
+	tag = EnsureV(tag)
+	return &Release{
+		TagName:      tag,
+		downloadBase: cfg.DownloadBase + "/" + cfg.Repo + "/releases/download/" + tag,
+	}
+}
+
+// tagRe matches what may be treated as a resolved tag. A redirect that lands
+// somewhere unexpected — a login page, an error page, a test double echoing
+// the request — must not have its last path segment installed as a version.
+var tagRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+
+// latestTagFromRedirect reads the tag out of the Location of
+// <download base>/<repo>/releases/latest, which GitHub 302s to
+// ".../releases/tag/<tag>". Returns "" when there is no usable tag.
+func latestTagFromRedirect(ctx context.Context, cfg *Config) string {
+	u := cfg.DownloadBase + "/" + cfg.Repo + "/releases/latest"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ""
+	}
+	// Stop at the redirect itself: following it would download the release
+	// page's HTML for a string already sitting in the Location header.
+	client := *cfg.HTTPClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	// The body is a few bytes of redirect boilerplate, but draining it is
+	// what lets the connection be reused for the download that follows.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	loc, err := resp.Location()
+	if err != nil {
+		return ""
+	}
+	// Only a .../releases/tag/<tag> destination is a resolved release.
+	before, tag, ok := strings.Cut(loc.Path, "/releases/tag/")
+	if !ok || before == "" || !tagRe.MatchString(tag) {
+		return ""
+	}
+	return tag
+}
+
+func apiRelease(ctx context.Context, cfg *Config, tag string) (*Release, error) {
 	u := cfg.APIBase + "/repos/" + cfg.Repo + "/releases/latest"
 	if tag != "" {
 		u = cfg.APIBase + "/repos/" + cfg.Repo + "/releases/tags/" + EnsureV(tag)
@@ -123,7 +213,7 @@ func fetch(ctx context.Context, cfg *Config, src, dst string, mode os.FileMode) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", src, resp.Status)
+		return "", fmt.Errorf("GET %s: %s%s", src, resp.Status, assetHint(cfg, resp.StatusCode))
 	}
 	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
@@ -144,6 +234,17 @@ func fetch(ctx context.Context, cfg *Config, src, dst string, mode os.FileMode) 
 	// is freely re-runnable, so we do not gate on it.
 	_ = f.Sync()
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// assetHint explains a failed asset download. Anonymously the release was
+// never looked up — a pinned tag is taken at its word and named directly —
+// so a 404 here is the first sign that the tag or the asset does not exist,
+// and a bare "404 Not Found" would leave the operator guessing.
+func assetHint(cfg *Config, status int) string {
+	if cfg.Token == "" && status == http.StatusNotFound {
+		return " (no such release or asset in " + cfg.Repo + "; check the version tag)"
+	}
+	return ""
 }
 
 // stalledReader abandons a read that makes no progress for d.

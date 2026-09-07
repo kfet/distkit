@@ -5,11 +5,14 @@
 // was missing a different piece, and it carries the union of what they got
 // right:
 //
-//   - Every byte moves through the GitHub REST API, asset payloads included
-//     (`Accept: application/octet-stream`), with a bearer token when one can
-//     be discovered. This is the only shape that works against a repo that is
-//     still private, and it works unauthenticated against a public one, so
-//     there is one code path rather than two.
+//   - With a token every byte moves through the GitHub REST API, asset
+//     payloads included (`Accept: application/octet-stream`). That is the
+//     only shape that works against a repo that is still private. Without
+//     one — the ordinary public case — the API is skipped entirely: the
+//     unauthenticated limit is 60 requests/hour per IP ADDRESS, so a NAT'd
+//     fleet spends it between its own hosts, and an update must not fail
+//     for that. "latest" then comes from the /releases/latest redirect and
+//     assets from the download host, at zero API cost.
 //   - sha256 of the downloaded asset is checked against the release's
 //     `checksums.txt` before anything is moved into place.
 //   - The replacement is an ETXTBSY-safe atomic swap: stage in a temp dir
@@ -56,6 +59,11 @@ import (
 
 // DefaultAPIBase is the GitHub REST API root.
 const DefaultAPIBase = "https://api.github.com"
+
+// DefaultDownloadBase is the host serving release downloads and the
+// /releases/latest redirect. Unlike the API it has no per-IP request budget,
+// which is what makes the anonymous path in github.go possible.
+const DefaultDownloadBase = "https://github.com"
 
 // DefaultAssetTemplate names a raw-binary release asset, which is what
 // goreleaser's `formats: [binary]` produces. See Config.AssetTemplate.
@@ -148,6 +156,13 @@ type Config struct {
 	// APIBase is the GitHub API root; empty means DefaultAPIBase. Tests
 	// point it at an httptest server.
 	APIBase string
+
+	// DownloadBase is the host release assets are fetched from when no
+	// token is in play, and the host whose /releases/latest redirect
+	// resolves "latest" without spending API quota. Empty means
+	// DefaultDownloadBase. Tests point it at an httptest server; a GitHub
+	// Enterprise install points it at its own web host.
+	DownloadBase string
 
 	// HTTPClient overrides the default client. The default deliberately
 	// has NO total-request deadline: a release binary is ~10 MB and a Pi
@@ -252,6 +267,9 @@ func (c *Config) normalise() error {
 	}
 	if c.APIBase == "" {
 		c.APIBase = DefaultAPIBase
+	}
+	if c.DownloadBase == "" {
+		c.DownloadBase = DefaultDownloadBase
 	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = defaultHTTPClient()
