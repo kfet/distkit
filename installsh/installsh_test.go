@@ -598,3 +598,75 @@ func TestAnonymousResolveSurvivesASpentAPIRateLimit(t *testing.T) {
 		t.Errorf("anonymous install spent %d API request(s); it must not touch the API", apiHits)
 	}
 }
+
+// TestRedirectTagWithASlashIsNotTruncated pins a silent-wrong-install: the
+// curl branch used to reduce the redirect URL to its last path segment, so a
+// latest release tagged "release/v1" resolved to "v1". When a DIFFERENT tag
+// "v1" also exists with its own assets and checksums, nothing fails — the
+// wrong binary installs quietly. The tag must survive whole so the guard can
+// reject it and fall back to the API.
+func TestRedirectTagWithASlashIsNotTruncated(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not available")
+	}
+	asset := "testtool-linux-amd64"
+	build := func(body string) map[string][]byte {
+		payload := []byte("#!/bin/sh\necho " + body + "\n")
+		h := sha256.Sum256(payload)
+		return map[string][]byte{
+			asset:           payload,
+			"checksums.txt": []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(h[:]), asset)),
+		}
+	}
+	// Both tags are complete and self-consistent, so a truncated tag
+	// installs the wrong binary without any error to notice.
+	byTag := map[string]map[string][]byte{"release/v1": build("correct"), "v1": build("WRONG")}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/repos/kfet/testtool/releases/latest"):
+			_, _ = w.Write([]byte(`{"tag_name":"release/v1","assets":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			http.Redirect(w, r, "/kfet/testtool/releases/tag/release/v1", http.StatusFound)
+		case strings.Contains(r.URL.Path, "/releases/tag/"):
+			_, _ = w.Write([]byte("<html>release page</html>"))
+		case strings.Contains(r.URL.Path, "/releases/download/"):
+			rest := r.URL.Path[strings.Index(r.URL.Path, "/releases/download/")+len("/releases/download/"):]
+			cut := strings.LastIndex(rest, "/")
+			files, ok := byTag[rest[:cut]]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			if data, ok := files[rest[cut+1:]]; ok {
+				_, _ = w.Write(data)
+				return
+			}
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "install.sh")
+	if err := os.WriteFile(path, []byte(mustRender(t, Spec{Repo: "kfet/testtool", Binary: "testtool"})), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(dir, "bin")
+	cmd := exec.Command("sh", path)
+	cmd.Env = append(os.Environ(),
+		"GITHUB_API="+srv.URL, "GITHUB_HOST="+srv.URL,
+		"BIN_DIR="+binDir, "OS=linux", "ARCH=amd64", "GITHUB_TOKEN=", "PREFIX=", "VERSION=")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
+	}
+	got, _ := os.ReadFile(filepath.Join(binDir, "testtool"))
+	if !strings.Contains(string(got), "correct") {
+		t.Fatalf("installed the wrong tag's binary: %q", got)
+	}
+}
