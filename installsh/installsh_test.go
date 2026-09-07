@@ -419,7 +419,7 @@ func TestGeneratedScriptInstallsEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("unresolvable release aborts", func(t *testing.T) {
+	t.Run("unresolvable release aborts and explains itself", func(t *testing.T) {
 		cmd := exec.Command("sh", path)
 		cmd.Env = append(os.Environ(),
 			"GITHUB_API="+srv.URL+"/nowhere", "GITHUB_HOST="+srv.URL,
@@ -427,6 +427,13 @@ func TestGeneratedScriptInstallsEndToEnd(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			t.Fatalf("want a failure:\n%s", out)
+		}
+		// The two real causes are a private repo and a spent per-IP
+		// unauthenticated rate limit. Under `set -e` the download used to
+		// abort the script with curl's bare "error: 22" before any of that
+		// could be said, which sends an operator hunting in the wrong place.
+		if !strings.Contains(string(out), "GITHUB_TOKEN") {
+			t.Errorf("the failure must name the token, got:\n%s", out)
 		}
 	})
 }
